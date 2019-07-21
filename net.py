@@ -57,4 +57,4 @@ class SegmentationNetwork(nn.Module):
 
     def decode(self, pred_tensor, threshold=0.5):
         sm = F.softmax(pred_tensor, dim=1)
-        return (sm[:, 0, :, :] > threshold).long()
+        return (sm[:, 1, :, :] > threshold).long()
