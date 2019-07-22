@@ -7,7 +7,6 @@ import numpy as np
 import torch
 import torch.utils.data
 
-from accuracy import RollingAccuracy
 from net import SegmentationNetwork
 
 
@@ -20,6 +19,9 @@ def worker_init_fn(worker_id):
 
 
 class Dataset(torch.utils.data.Dataset):
+    """
+    Train dataset comprised of random tiles from the original image.
+    """
     def __init__(self, feature_img_path, gt_img_path, net_reso_hw, fake_size):
         self._feature_img = cv2.imread(feature_img_path)
         gt_img_path = cv2.imread(gt_img_path)
@@ -45,6 +47,9 @@ class Dataset(torch.utils.data.Dataset):
 
 
 class InferenceDataset(torch.utils.data.Dataset):
+    """
+    Virtual dataset that generates tiles out of a single image.
+    """
     def __init__(self, feature_img, net_reso_hw):
         self._feature_img = feature_img
         img_reso_hw = tuple(feature_img.shape[:2])
@@ -77,6 +82,9 @@ class InferenceDataset(torch.utils.data.Dataset):
         return feature_tensor
 
     def compose(self, tile_list):
+        """
+        Gathers tiles back together into one big image.
+        """
         big_img = np.zeros(self._padded_img.shape[:2], dtype=np.uint8)
         for index, tile_img in enumerate(tile_list):
             ih = index // self._tile_reso_hw[1]
@@ -91,6 +99,10 @@ class InferenceDataset(torch.utils.data.Dataset):
 
 
 class Trainer:
+    """
+    Trainer class that handles all stages of neural network training and inference.
+    """
+
     def __init__(self, do_train=False):
         has_gpu = torch.cuda.device_count() > 0
         if has_gpu:
@@ -99,9 +111,9 @@ class Trainer:
             print("GPU not found")
         self.use_gpu = has_gpu
 
-        self._net = SegmentationNetwork()
+        self._net = SegmentationNetwork() # Instantiate a NN
 
-        self._net_reso_hw = (256, 256)
+        self._net_reso_hw = (256, 256) # Resolution of the NN during training phase
 
         if do_train:
             paths = [os.path.join("images", p) for p in ("rgb.png", "gt.png")]
@@ -125,18 +137,21 @@ class Trainer:
         self._snapshot_name = "snapshot.pth"
 
         if not do_train:
+            # Load the last snapshot for inference
             load_kwargs = {} if self.use_gpu else {'map_location': 'cpu'}
             self._net.load_state_dict(torch.load(self._snapshot_name, **load_kwargs))
 
     def train(self):
-        num_epochs = 1000
-        learning_rate = 0.02
+        """
+        Performs training procedure.
+        """
+
+        num_epochs = 100
+        learning_rate = 0.01
 
         optimizer = torch.optim.SGD(self._net.parameters(), lr=learning_rate)
         scheduler = torch.optim.lr_scheduler.MultiStepLR(
             optimizer, [int(0.9*num_epochs), int(0.95*num_epochs)], gamma=0.1, last_epoch=-1)
-
-        # rolling_accuracy = RollingAccuracy()
 
         for epoch in range(num_epochs):
             print("Epoch ------ ", epoch)
@@ -154,21 +169,10 @@ class Trainer:
 
                 loss = self._net.loss(pred, gt_tensor)
 
-                decoded_batch = self._net.decode(pred)
-
-                # rolling_accuracy.add_batch(
-                #     gt_tensor.detach().cpu().numpy(),
-                #     decoded_batch.detach().cpu().numpy())
-
                 if batch_index % 10 == 0:
                     print("epoch={} batch={} loss={:.4f}".format(
                         epoch, batch_index, loss.detach().cpu().item()
                     ))
-
-                    # ra_dict = rolling_accuracy.get_accuracies()
-                    # print("IoU={:.4f}".format(
-                    #     ra_dict["iou"],
-                    # ))
 
                     elapsed_minutes = int(time.time() - training_start_time) // 60
                     print("Elapsed {} minutes".format(elapsed_minutes))
@@ -191,12 +195,35 @@ class Trainer:
         print("Training done")
 
     def test_prediction(self):
+        """
+        Evaluates accuracy for a big original image.
+        """
+
         feature_image = cv2.imread("images/rgb.png")
         segmentation_image = self.infer(feature_image)
         output_image = (segmentation_image * 255).astype(np.uint8)
         cv2.imwrite("output.png", output_image)
 
+        gt_image = cv2.imread("images/gt.png", cv2.IMREAD_GRAYSCALE)
+        IoU = self.intersection_over_union(output_image, gt_image)
+        print("Test IoU: {:.3f}".format(IoU))
+
+    @staticmethod
+    def intersection_over_union(pred_image, gt_image):
+        pred_mask = pred_image < 128
+        gt_mask = gt_image < 128
+        inter_mask = np.logical_and(pred_mask, gt_mask)
+        union_mask = np.logical_or(pred_mask, gt_mask)
+        inter = np.sum(inter_mask)
+        union = np.sum(union_mask)
+        IoU = inter / union if union > 0 else 0
+        return IoU
+
     def infer(self, feature_image):
+        """
+        Returns prediction for a given input image.
+        """
+
         inference_dataset = InferenceDataset(feature_image, self._net_reso_hw)
 
         inference_batch_size = 1
